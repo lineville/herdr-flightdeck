@@ -438,7 +438,8 @@ export default class FlightDeck extends View {
           .hover((st) => st.bg(C.surface2))
           .on_click((_e, cx) => { this.view = null; this.orbitCache = null; this.place(this.clock(), 0); this.wake?.(); cx.notify(); })
           .child(mono(10.5, C.accent, 600).child("RETURN"))))
-        .when(others.length > 0, (el) => el.child(div().w(1).h(16).bg(C.hairline).flex_none()).child(h_flex().gap(6).children(others.slice(0, 5).map(chip)))))
+        // Narrow, the chips would crowd out the system's own name: they show from 720px wide.
+        .when(others.length > 0 && (this.size?.width ?? 0) >= 720, (el) => el.child(div().w(1).h(16).bg(C.hairline).flex_none()).child(h_flex().gap(6).children(others.slice(0, 5).map(chip)))))
       .child(h_flex().gap(14).flex_none().items_center()
         .child(stat(count("working"), "IN ORBIT", C.accent))
         .child(stat(count("blocked"), "HOLDING", C.warning))
