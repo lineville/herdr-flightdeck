@@ -27,7 +27,7 @@ One view, dark and flat, on its own colours rather than the Herdr theme: `#00000
 - **Depth.** Craft scale with distance (closer is bigger) and fade to 55% behind the planet; behind the planet's disc they fade out.
 - **Drag** turns the system (sideways spins it, up and down tilts it, from below the plane to straight down). **Scroll** zooms 0.45× to 2.6×. A press that moves more than 4px is a drag, not a click. The view is saved per copy.
 - **The manifest resizes.** Drag its header up for taller, down for shorter (the cursor is a row resize). Dropped below 64px it collapses to its header; dragged back up it opens again. Dragged open, it keeps at least one row and leaves the cockpit 120px. `COLLAPSE` / `EXPAND` toggles it. A dragged height lasts until the panel is resized, the view is reopened, or `EXPAND` is pressed; then it snaps back to fit the crew, and it follows the crew as agents come and go. Collapsed or open is saved per copy. The camera refits whenever the cockpit changes size, including when the crew changes the manifest's height.
-- **Click** a craft or a manifest row to focus that agent (`agent.focus`). Hovering either lights the other.
+- **Click** a craft, its tag or a manifest row to focus that agent (`agent.focus`). Hovering either lights the other. A craft's hover target is its glyph plus an 8px halo all round, and its tag while the tag shows, so the pointer can move from glyph to tag without the tag closing. A docked craft's hidden tag isn't a target, so its spot on the planet doesn't open tags you can't see.
 - **Fleet and System.** `FLEET` (the default, saved per copy) shows every space; `SYSTEM` shows one, following the shown space. Click a planet or its tag to show that space; double-click a planet to open it in System mode. In System mode, click a chip to view another space's system; `RETURN` follows the shown space again. Drag and scroll turn and zoom every system together.
 - **Motion** is native: each craft glides between targets set every 0.7s while orbiting and every 0.22s while launching or landing (linear `transition` on left, top, width, height and opacity). With nothing moving, there are no redraws.
 - **Props**, all optional: `demo: true` flies a scripted 72-second fleet instead of real agents (no terminals read, no agents started, clicks do nothing, `DEMO DATA` shows); `demoStart` skips into that script (seconds); `fps` redraws that often while craft move; `speed` (0 to 1) slows every motion and timer, for recording slowly and playing back faster.
@@ -57,6 +57,7 @@ One view, dark and flat, on its own colours rather than the Herdr theme: `#00000
 - **Planet sizes.** The orbits treat the planet as radius 1. A world's size scales only its art, its pads and its hide test; keep sizes under about 1.2 so the nearest orbit (1.45, never under 1.25) stays clear of the surface.
 - **Fonts** in `fonts/` load at start or on the next look change; change zoom once after installing.
 - **Model and context come from the screen or the chat host.** Herdr doesn't report them. An agent whose status line shows neither stays on the far orbit with its program's glyph and `MODEL --`, `CTX --`. A dialog over the status line keeps the last reading. A chat agent's screen has no status line, so reading its screen leaves the tag at `MODEL --` for good: ask its host instead.
+- **Hover across parts.** Leaving the halo and entering the tag can report in either order, so track each part under the pointer and drop the hover only when none is left; prune parts of craft that leave the view, since they never report leaving.
 - **Chat links across reloads.** A mod reload leaves the old build's WebSockets open until QuickJS collects them; count builds on a `globalThis` symbol and close older builds' links when a new one starts.
 - **Recording.** `herdr-app shot` takes about 170ms for a 5K frame; several at once can freeze Herdr. Capture one at a time, and use `speed` to slow the view down rather than capturing faster.
 - Herdr draws only while its window is visible: captures of a covered window repeat one frame.
@@ -74,6 +75,7 @@ One view, dark and flat, on its own colours rather than the Herdr theme: `#00000
 - A blocked agent stops and pulses `#ff844d`, and the top bar counts it as `HOLDING`.
 - As an agent's context fills, its orbit moves closer to the planet.
 - Two agents on the same model and context get two visibly separate orbits.
+- Hovering just outside a small craft opens its tag, and moving onto the tag keeps it open.
 - Dragging turns the system, scrolling zooms, and `RESET VIEW` puts it back.
 - Opened, and after resizing the panel, the manifest shows every crew row with no empty space under the last one.
 - Dragging the manifest's header resizes it; dragging it to the bottom collapses it to the header, and `EXPAND` opens it.
