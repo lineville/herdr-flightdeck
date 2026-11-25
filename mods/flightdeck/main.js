@@ -18,7 +18,13 @@ import {
 import { modelLook, parseStatusLine } from "./telemetry.js";
 import { ChatTelemetry, chatOf } from "./chats.js";
 
-const READ_MS = 5000; // how often each agent's status line is read for its model and context
+// Model and context come from each agent's status line, read with `hc read`. A read freezes
+// a Claude Code or Codex terminal's output for about a second (a plain shell doesn't), so
+// typing into it stalls. Read an agent only when its status changes, when a turn may have
+// moved its context, and every WORKING_READ_MS while it works. An idle agent you're typing
+// into is never read.
+const READ_MS = 5000; // how often the reader checks which agents are due
+const WORKING_READ_MS = 30000;
 
 const VIEW_KEY = "flightdeck.view";
 const MODE_KEY = "flightdeck.mode";
@@ -200,6 +206,7 @@ export default class FlightDeck extends View {
     // host reports model and context over a link (chats.js).
     if (!this.demo) {
       this.chatOf = new Map(); // address -> chat
+      this.readState = new Map(); // address -> { at, status } of its last status-line read
       this.chats = new ChatTelemetry((cx) => { if (this.takeChats()) { this.wake?.(); cx.notify(); } });
     }
     if (!this.demo) cx.spawn(async (cx) => {
@@ -217,6 +224,10 @@ export default class FlightDeck extends View {
         let changed = this.takeChats();
         for (const a of shownAgents) {
           if (this.chatOf.has(a.address)) continue;
+          const last = this.readState.get(a.address);
+          const due = !last || last.status !== a.status || (a.status === "working" && Date.now() - last.at >= WORKING_READ_MS);
+          if (!due) continue;
+          this.readState.set(a.address, { at: Date.now(), status: a.status });
           try {
             const res = await hc(["read", a.address, "--lines", "16"]);
             const got = parseStatusLine(res?.stdout);
