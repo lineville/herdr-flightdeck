@@ -242,9 +242,13 @@ export default class FlightDeck extends View {
         // The layer exists once the view has drawn it; until then there's nothing to redraw.
         if (this.layerDirty && this.renderedAt) {
           this.layerDirty = false;
-          try { cx.notify(this.layer); } catch {}
+          this.layerTick = (this.layerTick ?? 0) + 1;
+          try { this.layer.set_props({ deck: this, tick: this.layerTick }); } catch {}
         }
-        await Promise.race([cx.sleep(step || 5000), new Promise((wake) => { this.wake = wake; })]);
+        // Never wake this loop from render: a redraw requested while the view's render is still
+        // settling gets dropped, and the craft layer then freezes until the next full render (~1s).
+        // With nothing moving, a 250ms poll picks up what render marked dirty.
+        await Promise.race([cx.sleep(step || 250), new Promise((wake) => { this.wake = wake; })]);
       }
     });
   }
@@ -386,7 +390,7 @@ export default class FlightDeck extends View {
         if (was === "working" || was === "blocked") { c.from = this.worldAt(c, now); c.phase = "land"; c.t0 = now; }
       }
     });
-    if (changed) { this.place(this.clock(), 300); this.wake?.(); }
+    if (changed) this.place(this.clock(), 300);
   }
 
   orbitParent(c) {
@@ -622,7 +626,6 @@ export default class FlightDeck extends View {
     const tabs = new Map(shown.flatMap((s) => s.tabs ?? []).map((t) => [t.id, t]));
     this.renderedAt = Date.now();
     this.layerDirty = true;
-    this.wake?.();
 
     const root = v_flex().id("root").size_full().bg(C.bg).overflow_hidden()
       .when(Boolean(this.resizing), (el) => el.cursor_row_resize())
