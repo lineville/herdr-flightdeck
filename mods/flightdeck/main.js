@@ -91,8 +91,11 @@ const HUD_H = 40;
 const EDGE = 16; // inset of the cockpit readouts, matching the top bar's padding
 const ROW_H = 34;
 const HEAD_H = 24;
-const FAST_MS = 220; // ticks while a craft launches or lands
-const SLOW_MS = 700; // ticks while craft only orbit
+// While craft move, a ticker places them every FRAME_MS (30fps) and redraws only the craft
+// layer (`CraftLayer`). Native glides would run at the display's rate (144Hz here) and
+// redraw the whole window each frame (herdr-app#413), which delays terminal echo while typing.
+const FRAME_MS = 33;
+const CLOCK_MS = 1000; // the rest of the view redraws this often while craft move, for its clocks
 
 const STATUS = {
   working: { badge: "In orbit", text: C.neutral, bg: C.neutralBg, mark: C.accent },
@@ -141,6 +144,14 @@ export function grid(n, w, h) {
   });
 }
 
+// The craft and moon rings, redrawn on their own by the flight ticker so the rest of the
+// view (planets, orbits, HUD, manifest) doesn't rebuild 30 times a second.
+class CraftLayer extends View {
+  init(p) { this.p = p ?? {}; }
+  update(p) { this.p = p ?? {}; }
+  render() { return this.p.deck?.craftLayer() ?? div(); }
+}
+
 export default class FlightDeck extends View {
   init(_props, cx) {
     const speedProp = Number((props() ?? {}).speed);
@@ -156,7 +167,7 @@ export default class FlightDeck extends View {
     this.mode = store.get(MODE_KEY, (m) => m === "fleet" || m === "system", "fleet");
     this.hover = null;
     this.hoverParts = new Set(); // "address|part" under the pointer: a craft's halo, its tag, its manifest row
-    this.dur = SLOW_MS;
+    this.dur = 0;
     this.orbitCache = null;
     this.look = loadView();
     this.press = null;
@@ -169,8 +180,11 @@ export default class FlightDeck extends View {
     this.demo = p.demo ? createDemo(this.clock, Number(p.demoStart) || 0) : null;
     this.src = this.demo ?? { agents, spaces, terminals, focused };
     const frameMs = Number(p.fps) > 0 ? Math.max(33, Math.round(1000 / Number(p.fps))) : 0;
-    this.fastMs = frameMs || FAST_MS;
-    this.slowMs = frameMs || SLOW_MS;
+    this.frameMs = frameMs || FRAME_MS;
+    this.layer = cx.new(CraftLayer, { deck: this });
+    this.layerDirty = true; // the craft layer needs a redraw
+    this.deckDirty = false; // the whole view needs a redraw (hover on a craft lights its manifest row)
+    this.renderedAt = 0;
     if (this.demo) {
       cx.spawn(async (cx) => {
         for (;;) {
@@ -220,12 +234,17 @@ export default class FlightDeck extends View {
       for (;;) {
         const step = this.step();
         if (step) {
-          this.place(this.clock() + step * this.speed, step);
-          cx.notify();
-          await Promise.race([cx.sleep(step), new Promise((wake) => { this.wake = wake; })]);
-        } else {
-          await Promise.race([cx.sleep(5000), new Promise((wake) => { this.wake = wake; })]);
+          this.place(this.clock(), 0);
+          this.layerDirty = true;
+          if (Date.now() - this.renderedAt >= CLOCK_MS) this.deckDirty = true;
         }
+        if (this.deckDirty) { this.deckDirty = false; cx.notify(); }
+        // The layer exists once the view has drawn it; until then there's nothing to redraw.
+        if (this.layerDirty && this.renderedAt) {
+          this.layerDirty = false;
+          try { cx.notify(this.layer); } catch {}
+        }
+        await Promise.race([cx.sleep(step || 5000), new Promise((wake) => { this.wake = wake; })]);
       }
     });
   }
@@ -456,15 +475,11 @@ export default class FlightDeck extends View {
 
   step() {
     const ids = new Set(this.shown().map((s) => s.id));
-    let orbiting = false;
     for (const c of this.craft.values()) {
       if (!ids.has(c.space)) continue;
-      if (c.phase === "launch" || c.phase === "land") return this.fastMs;
-      // Moons turn in seconds, so they tick fast too; at the slow tick they cut corners.
-      if (c.phase === "orbit" && c.parent) return this.fastMs;
-      if (c.phase === "orbit") orbiting = true;
+      if (c.phase === "launch" || c.phase === "land" || c.phase === "orbit") return this.frameMs;
     }
-    return orbiting ? this.slowMs : 0;
+    return 0;
   }
 
   // Lays the systems out, then works out each craft's next spot. Each one glides there over `dur`.
@@ -605,6 +620,9 @@ export default class FlightDeck extends View {
     this.sync(list, parents, crew);
     this.rows = this.buildRows(shown, list);
     const tabs = new Map(shown.flatMap((s) => s.tabs ?? []).map((t) => [t.id, t]));
+    this.renderedAt = Date.now();
+    this.layerDirty = true;
+    this.wake?.();
 
     const root = v_flex().id("root").size_full().bg(C.bg).overflow_hidden()
       .when(Boolean(this.resizing), (el) => el.cursor_row_resize())
@@ -697,6 +715,16 @@ export default class FlightDeck extends View {
     const layer = (path, color) => (path ? window.paint_path(path, color).absolute().left(0).top(0).w(vp.w).h(vp.h) : null);
     const farRings = this.orbitCache.rings.flatMap((r) => r.far.map((p) => layer(p, r.farColor)));
     const nearRings = this.orbitCache.rings.flatMap((r) => r.near.map((p) => layer(p, r.nearColor)));
+    this.layerCtx = { vp, tabs };
+    const starSide = Math.max(vp.w, vp.h);
+    const moved = Math.abs(yaw - DEFAULT_VIEW.yaw) > 1e-3 || Math.abs(pitch - DEFAULT_VIEW.pitch) > 1e-3 || Math.abs(zoom - DEFAULT_VIEW.zoom) > 1e-3;
+    return this.cockpitFrame(vp, shown, list, farRings, nearRings, starSide, moved);
+  }
+
+  // The moving part of the cockpit: moon rings and craft, drawn by `CraftLayer`.
+  craftLayer() {
+    if (!this.layerCtx || !this.size || !this.rows) return div();
+    const { vp, tabs } = this.layerCtx;
     const moonDur = { duration: this.dur, easing: "linear" };
     const moonPath = (run) => {
       let path = PathBuilder.stroke(1.2).dash_array(MOON_DOTS).move_to(run[0][0], run[0][1]);
@@ -709,10 +737,11 @@ export default class FlightDeck extends View {
       .children([...m.far.map((r) => [r, `${ORBIT_GRAY}${MOON_FAR_ALPHA}`]), ...m.near.map((r) => [r, `${ORBIT_GRAY}${MOON_NEAR_ALPHA}`])]
         .filter(([r]) => r.length > 1)
         .map(([r, color]) => window.paint_path(moonPath(r), color).absolute().left(0).top(0).w(m.w).h(m.h))));
-    const starSide = Math.max(vp.w, vp.h);
     const bodies = this.rows.filter((r) => r.kind === "agent").map((r) => this.body(r.a, tabs)).filter(Boolean);
-    const moved = Math.abs(yaw - DEFAULT_VIEW.yaw) > 1e-3 || Math.abs(pitch - DEFAULT_VIEW.pitch) > 1e-3 || Math.abs(zoom - DEFAULT_VIEW.zoom) > 1e-3;
+    return div().absolute().left(0).top(0).w(vp.w).h(vp.h).children(moonRings).children(bodies);
+  }
 
+  cockpitFrame(vp, shown, list, farRings, nearRings, starSide, moved) {
     return div().id("cockpit").relative().w(vp.w).h(vp.h).flex_none().overflow_hidden().bg(C.bg)
       .when(Boolean(this.press), (el) => el.cursor_grabbing())
       .when(!this.press, (el) => el.cursor_grab())
@@ -747,8 +776,7 @@ export default class FlightDeck extends View {
       .children(farRings)
       .children(this.cells.flatMap((cell) => this.planet(cell, list)))
       .children(nearRings)
-      .children(moonRings)
-      .children(bodies)
+      .child(this.layer)
       .child(this.readout(vp, shown, list))
       .child(this.viewControls(vp, moved))
       .when(shown.length === 0, (el) => el.child(v_flex().absolute().left(0).w(vp.w).top(vp.h / 2 - 20).items_center().gap(4)
@@ -894,11 +922,13 @@ export default class FlightDeck extends View {
     const tel = this.telemetry.get(a.address);
     const glyph = c.parent ? "sat" : modelLook(tel?.model, a.app ?? a.program?.key).glyph;
     const lit = this.hover === a.address || a.focused;
+    // Rings hold still: a spin or pulse redraws the whole window about 30 times a second
+    // (herdr-app#413), which delays terminal echo while typing. Color alone shows the phase.
     let ring;
     if (c.phase === "launch" || c.phase === "orbit") {
-      ring = svg(`${ASSET}/arc.svg`).absolute().left(0).top(0).size_full().text_color(this.spaceColor(c.space)).spin(1400 / this.speed);
+      ring = svg(`${ASSET}/ring.svg`).absolute().left(0).top(0).size_full().text_color(this.spaceColor(c.space));
     } else if (c.phase === "hold") {
-      ring = svg(`${ASSET}/ring.svg`).absolute().left(0).top(0).size_full().text_color(C.warning).loop("opacity", { from: 0.25, to: 1, period: 1400 / this.speed });
+      ring = svg(`${ASSET}/ring.svg`).absolute().left(0).top(0).size_full().text_color(C.warning);
     } else if (c.phase === "land") {
       ring = svg(`${ASSET}/ring.svg`).absolute().left(0).top(0).size_full().text_color(C.border);
     } else {
@@ -959,7 +989,10 @@ export default class FlightDeck extends View {
         this.hover = next ? next.slice(0, next.lastIndexOf("|")) : null;
       }
     }
+    // A craft's halo and tag live in the craft layer; the manifest row in the whole view.
     cx.notify();
+    this.deckDirty = true;
+    this.wake?.();
   }
 
   ctxMeter(ctx) {
